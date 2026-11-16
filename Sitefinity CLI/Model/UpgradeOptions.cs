@@ -49,6 +49,30 @@ namespace Sitefinity_CLI.Model
 
         public List<string> DeprecatedPackagesList { get; set; } = new List<string>();
 
+        /// <summary>
+        /// The deprecated packages that are uninstalled before the upgrade without their dependencies,
+        /// because the dependencies are still required by other installed packages.
+        /// </summary>
+        public List<string> PackagesToRemoveKeepingDependencies { get; set; } = new List<string>();
+
+        /// <summary>
+        /// The deprecated packages that are uninstalled after the upgrade. They have no dependencies, so they cannot block it,
+        /// and once the upgrade is done no installed package requires them.
+        /// </summary>
+        public List<string> PackagesToRemoveAfterUpgrade { get; set; } = new List<string>();
+
+        /// <summary>
+        /// The deprecated packages that are uninstalled before the Sitefinity packages are upgraded.
+        /// </summary>
+        public IEnumerable<string> PackagesToRemoveBeforeUpgrade => this.DeprecatedPackagesList
+            .Except(this.PackagesToRemoveAfterUpgrade, StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The deprecated packages that are uninstalled before the upgrade together with their dependencies.
+        /// </summary>
+        public IEnumerable<string> PackagesToRemoveWithDependencies => this.PackagesToRemoveBeforeUpgrade
+            .Except(this.PackagesToRemoveKeepingDependencies, StringComparer.OrdinalIgnoreCase);
+
         public List<DeprecatedPackage> ResourceBackupList { get; set; } = new List<DeprecatedPackage>();
 
         private void CalculatePackagesToBeRemoved(bool removeDeprecatedPackages, string removeDeprecatedPackagesExcept)

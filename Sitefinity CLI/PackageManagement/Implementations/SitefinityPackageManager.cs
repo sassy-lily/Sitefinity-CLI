@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using NuGet.Configuration;
 using NuGet.Frameworks;
 using NuGet.Packaging.Core;
+using NuGet.Versioning;
 using Sitefinity_CLI.Exceptions;
 using Sitefinity_CLI.Model;
 using Sitefinity_CLI.PackageManagement.Contracts;
@@ -96,6 +97,27 @@ namespace Sitefinity_CLI.PackageManagement.Implementations
         public async Task<IReadOnlyList<PackageDependency>> GetPackageDependencies(string id, string version, IEnumerable<PackageSource> nugetPackageSources, NuGetFramework targetFramework)
         {
             return await this.nuGetApiClient.GetPackageDependencies(id, version, nugetPackageSources, targetFramework);
+        }
+
+        public async Task<IReadOnlyList<PackageDependency>> GetInstalledPackageDependencies(string packageId, string projectFilePath, IEnumerable<PackageSource> nugetPackageSources)
+        {
+            string packagesConfigFilePath = GetPackagesConfigFilePathForProject(projectFilePath);
+            NuGetPackage installedPackage = this.packagesConfigFileEditor.FindPackage(packagesConfigFilePath, packageId);
+            if (installedPackage == null || !NuGetVersion.TryParse(installedPackage.Version, out NuGetVersion installedVersion))
+            {
+                return null;
+            }
+
+            XmlDocument projectFileXmlDocument = new XmlDocument();
+            projectFileXmlDocument.Load(projectFilePath);
+            if (!Version.TryParse(GetTargetFramework(projectFileXmlDocument).TrimStart('v', 'V'), out Version targetFrameworkVersion))
+            {
+                return null;
+            }
+
+            NuGetFramework targetFramework = new NuGetFramework(FrameworkConstants.FrameworkIdentifiers.Net, targetFrameworkVersion);
+
+            return await this.nuGetApiClient.GetPackageDependencies(packageId, installedVersion.ToNormalizedString(), nugetPackageSources, targetFramework);
         }
 
         public void SyncReferencesWithPackages(string projectFilePath, string solutionDir)

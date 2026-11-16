@@ -25,14 +25,28 @@ namespace Sitefinity_CLI.Services
 
             using IVisualStudioWorker worker = this.visualStudioWorkerFactory.CreateVisualStudioWorker();
             worker.Initialize(options.SolutionPath);
-            List<string> scriptParameters = new List<string>();
-            if (options.DeprecatedPackagesList.Count > 0)
-            {
-                scriptParameters.Add($"-PackagesToRemove {string.Join(", ", options.DeprecatedPackagesList)}");
-            }
-            worker.ExecuteScript(updaterPath, scriptParameters);
+            worker.ExecuteScript(updaterPath, GetUpgradeScriptParameters(options));
 
             this.EnsureOperationSuccess();
+        }
+
+        internal static List<string> GetUpgradeScriptParameters(UpgradeOptions options)
+        {
+            List<string> scriptParameters = new List<string>();
+            AddPackagesParameter(scriptParameters, "PackagesToRemove", options.PackagesToRemoveWithDependencies);
+            AddPackagesParameter(scriptParameters, "PackagesToRemoveKeepingDependencies", options.PackagesToRemoveBeforeUpgrade.Intersect(options.PackagesToRemoveKeepingDependencies, StringComparer.OrdinalIgnoreCase));
+            AddPackagesParameter(scriptParameters, "PackagesToRemoveAfterUpgrade", options.DeprecatedPackagesList.Intersect(options.PackagesToRemoveAfterUpgrade, StringComparer.OrdinalIgnoreCase));
+
+            return scriptParameters;
+        }
+
+        private static void AddPackagesParameter(List<string> scriptParameters, string parameterName, IEnumerable<string> packageIds)
+        {
+            List<string> packageIdsList = packageIds.ToList();
+            if (packageIdsList.Count > 0)
+            {
+                scriptParameters.Add($"-{parameterName} {string.Join(", ", packageIdsList)}");
+            }
         }
 
         public void ExecuteNugetInstall(InstallNugetPackageOptions options)

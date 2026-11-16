@@ -21,6 +21,16 @@ namespace Sitefinity_CLI.Tests.NugetLicenseCommandTests.Mocks
         public HashSet<string> InstalledPackages { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
+        /// The dependencies of the installed packages by package id. A package without an entry has no dependencies. A null value simulates dependencies that cannot be read.
+        /// </summary>
+        public Dictionary<string, IReadOnlyList<PackageDependency>> InstalledPackageDependencies { get; } = new Dictionary<string, IReadOnlyList<PackageDependency>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The dependencies of the packages in the package sources by "id@version". A package without an entry has no dependencies.
+        /// </summary>
+        public Dictionary<string, IReadOnlyList<PackageDependency>> PackageDependencies { get; } = new Dictionary<string, IReadOnlyList<PackageDependency>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
         /// Optional action to execute during Install (e.g., to create license files for testing).
         /// </summary>
         public Action<string, string, string, string> OnInstall { get; set; }
@@ -63,6 +73,26 @@ namespace Sitefinity_CLI.Tests.NugetLicenseCommandTests.Mocks
 
         public Task<IReadOnlyList<PackageDependency>> GetPackageDependencies(string id, string version, IEnumerable<PackageSource> nugetPackageSources, NuGetFramework targetFramework)
         {
+            if (this.PackageDependencies.TryGetValue($"{id}@{version}", out IReadOnlyList<PackageDependency> dependencies))
+            {
+                return Task.FromResult(dependencies);
+            }
+
+            return Task.FromResult<IReadOnlyList<PackageDependency>>(new List<PackageDependency>());
+        }
+
+        public Task<IReadOnlyList<PackageDependency>> GetInstalledPackageDependencies(string packageId, string projectFilePath, IEnumerable<PackageSource> nugetPackageSources)
+        {
+            if (!this.InstalledPackages.Contains(packageId))
+            {
+                return Task.FromResult<IReadOnlyList<PackageDependency>>(null);
+            }
+
+            if (this.InstalledPackageDependencies.TryGetValue(packageId, out IReadOnlyList<PackageDependency> dependencies))
+            {
+                return Task.FromResult(dependencies);
+            }
+
             return Task.FromResult<IReadOnlyList<PackageDependency>>(new List<PackageDependency>());
         }
 

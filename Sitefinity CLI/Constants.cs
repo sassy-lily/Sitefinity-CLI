@@ -80,6 +80,7 @@ namespace Sitefinity_CLI
         public const string SolutionNotReadable = "Unable to read solution";
         public const string NoProjectsFoundToUpgradeWarningMessage = "No projects with Sitefinity references found to upgrade.";
         public const string UninstallingPackagesWarning = "The following nuget packages will be removed during the upgrade:";
+        public const string UninstallingPackagesAfterUpgradeWarning = "The following nuget packages have no dependencies and will be removed after the upgrade:";
         public const string AcceptLicenseNotification = "Do you accept the terms and conditions";
         public const string ProceedWithUpgradeMessage = "Proceed with the upgrade?";
         public const string UpgradeWarning = "Make sure to have your project under source control. Currently there is no revert mechanism in the upgrade tool. The upgrade will launch visual studio instance in order to execute nuget upgrade. DO NOT CLOSE the opened visual studio. This will stop the upgrade. Do you want to continue?";
@@ -233,6 +234,7 @@ namespace Sitefinity_CLI
         public const string SitefinityHeadlessNuGetPackageId = "Progress.Sitefinity.Headless";
         public const string TelerikCentaurAllNuGetPackageId = "Telerik.Centaur.All";
         public static readonly Version CentaurPackageRemovalVersion = new Version(15, 4, 8640);
+        public const string NativeChatConnectorNuGetPackageId = "Progress.Sitefinity.NativeChatConnector";
         public const string SitefinityCoreModulesNuGetPackageId = "Progress.Sitefinity";
         public const string SitefinityWidgetsNuGetPackageId = "Progress.Sitefinity.AspNetCore.Widgets";
         public const string SitefinityFormWidgetsNuGetPackageId = "Progress.Sitefinity.AspNetCore.FormWidgets";

@@ -11,6 +11,8 @@ using HandlebarsDotNet;
 using McMaster.Extensions.CommandLineUtils;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using NuGet.Configuration;
+using NuGet.Packaging.Core;
 using Sitefinity_CLI.Commands.Validators;
 using Sitefinity_CLI.Model;
 using Sitefinity_CLI.PackageManagement.Contracts;
@@ -137,25 +139,46 @@ namespace Sitefinity_CLI.Commands
                 upgradeOptions.DeprecatedPackagesList.Add(Constants.TelerikCentaurAllNuGetPackageId);
             }
 
+            List<string> sitefinityProjectsFilePaths = projectFilePathsWithSitefinityVersion.Select(p => p.FilePath).ToList();
+            this.logger.LogInformation(string.Format(Constants.NumberOfProjectsWithSitefinityReferencesFoundSuccessMessage, sitefinityProjectsFilePaths.Count));
+            this.logger.LogInformation(string.Format(Constants.CollectionSitefinityPackageTreeMessage, this.Version));
+
+            NuGetPackage upgradePackage = await this.sitefinityPackageService.PrepareSitefinityUpgradePackage(upgradeOptions, sitefinityProjectsFilePaths);
+
+            // The removal is planned here, because it depends on the dependency tree of the new Sitefinity version.
+            await this.PlanDeprecatedPackagesRemoval(upgradeOptions, sitefinityProjectsFilePaths, upgradePackage);
+
             if (upgradeOptions.DeprecatedPackagesList.Count > 0)
             {
-                this.logger.LogInformation("Deprecated packages that will be removed as part of the upgrade: {DeprecatedPackages}", string.Join(", ", upgradeOptions.DeprecatedPackagesList));
+                List<string> packagesToRemoveBeforeUpgrade = upgradeOptions.PackagesToRemoveBeforeUpgrade.ToList();
+                if (packagesToRemoveBeforeUpgrade.Count > 0)
+                {
+                    this.logger.LogInformation("Deprecated packages that will be removed as part of the upgrade: {DeprecatedPackages}", string.Join(", ", packagesToRemoveBeforeUpgrade));
+                }
+
+                if (upgradeOptions.PackagesToRemoveAfterUpgrade.Count > 0)
+                {
+                    this.logger.LogInformation("Deprecated packages that will be removed after the upgrade: {DeprecatedPackages}", string.Join(", ", upgradeOptions.PackagesToRemoveAfterUpgrade));
+                }
+
                 if (!upgradeOptions.SkipPrompts)
                 {
-                    string formatedDeprecatedPackagesMessage = string.Join(Environment.NewLine, upgradeOptions.DeprecatedPackagesList);
-                    Utils.WriteLine($"{Environment.NewLine}{Constants.UninstallingPackagesWarning}{Environment.NewLine}{formatedDeprecatedPackagesMessage}", ConsoleColor.DarkYellow);
+                    if (packagesToRemoveBeforeUpgrade.Count > 0)
+                    {
+                        Utils.WriteLine($"{Environment.NewLine}{Constants.UninstallingPackagesWarning}{Environment.NewLine}{string.Join(Environment.NewLine, packagesToRemoveBeforeUpgrade)}", ConsoleColor.DarkYellow);
+                    }
+
+                    if (upgradeOptions.PackagesToRemoveAfterUpgrade.Count > 0)
+                    {
+                        Utils.WriteLine($"{Environment.NewLine}{Constants.UninstallingPackagesAfterUpgradeWarning}{Environment.NewLine}{string.Join(Environment.NewLine, upgradeOptions.PackagesToRemoveAfterUpgrade)}", ConsoleColor.DarkYellow);
+                    }
+
                     if (!this.promptService.PromptYesNo(Constants.ProceedWithUpgradeMessage))
                     {
                         return;
                     }
                 }
             }
-
-            List<string> sitefinityProjectsFilePaths = projectFilePathsWithSitefinityVersion.Select(p => p.FilePath).ToList();
-            this.logger.LogInformation(string.Format(Constants.NumberOfProjectsWithSitefinityReferencesFoundSuccessMessage, sitefinityProjectsFilePaths.Count));
-            this.logger.LogInformation(string.Format(Constants.CollectionSitefinityPackageTreeMessage, this.Version));
-
-            NuGetPackage upgradePackage = await this.sitefinityPackageService.PrepareSitefinityUpgradePackage(upgradeOptions, sitefinityProjectsFilePaths);
 
             bool isLicenseAccepted = await this.PromptLicenseForPackage(upgradePackage.Id, upgradePackage.Version);
 
@@ -179,7 +202,7 @@ namespace Sitefinity_CLI.Commands
                 }
             }
 
-            IEnumerable<PackageCompatibilityReport> compatibilityReports = await this.upgradeConfigGenerator.GenerateUpgradeConfig(projectFilePathsWithSitefinityVersion, upgradePackage, upgradeOptions.NugetConfigPath, additionalPackagesToUpgrade.ToList(), !this.SkipPrerequisitesCheck);
+            IEnumerable<PackageCompatibilityReport> compatibilityReports = await this.upgradeConfigGenerator.GenerateUpgradeConfig(projectFilePathsWithSitefinityVersion, upgradePackage, upgradeOptions.NugetConfigPath, additionalPackagesToUpgrade.ToList(), !this.SkipPrerequisitesCheck, upgradeOptions.PackagesToRemoveBeforeUpgrade.ToList());
             if (!this.ReportPackageCompatibilityIssues(compatibilityReports, upgradeOptions.SkipPrompts))
             {
                 return;
@@ -198,6 +221,107 @@ namespace Sitefinity_CLI.Commands
             this.sitefinityProjectService.RestoreBackupFilesAfterUpgrade(upgradeOptions);
 
             this.logger.LogInformation(string.Format(Constants.UpgradeSuccessMessage, this.SolutionPath, this.Version));
+        }
+
+        /// <summary>
+        /// Decides which deprecated packages are uninstalled before the upgrade and which after it.
+        /// A package with dependencies can pin versions that the upgrade has to change, so it is removed before the upgrade.
+        /// A package without dependencies cannot block the upgrade, so it is removed after it, when no installed package requires it anymore.
+        /// </summary>
+        private async Task PlanDeprecatedPackagesRemoval(UpgradeOptions upgradeOptions, IReadOnlyCollection<string> projectFilePaths, NuGetPackage upgradePackage)
+        {
+            IEnumerable<PackageSource> packageSources = this.sitefinityPackageManager.GetNugetPackageSources(upgradeOptions.NugetConfigPath);
+
+            // Sitefinity stopped depending on the NativeChat connector in a patch of every minor version, so the dependency tree
+            // of the new version is checked instead of a version number. An installed connector that is left behind requires
+            // the exact old version of Telerik.Sitefinity.Connectivity, which makes the upgrade of the Sitefinity packages fail.
+            bool isNativeChatConnectorLeftBehind =
+                projectFilePaths.Any(p => this.sitefinityPackageManager.PackageExists(Constants.NativeChatConnectorNuGetPackageId, p)) &&
+                !ContainsPackage(upgradePackage, Constants.NativeChatConnectorNuGetPackageId);
+
+            bool isNativeChatConnectorRemovedAfterUpgrade = isNativeChatConnectorLeftBehind &&
+                await this.CanBeRemovedAfterUpgrade(Constants.NativeChatConnectorNuGetPackageId, projectFilePaths, packageSources);
+
+            // A connector that blocks the upgrade is always removed. One that does not is removed only on request, like the other deprecated packages.
+            bool isRemovalRequested = this.RemoveDeprecatedPackages || !string.IsNullOrEmpty(this.RemoveDeprecatedPackagesExcept);
+            if (isNativeChatConnectorLeftBehind &&
+                (!isNativeChatConnectorRemovedAfterUpgrade || isRemovalRequested) &&
+                !upgradeOptions.DeprecatedPackagesList.Contains(Constants.NativeChatConnectorNuGetPackageId, StringComparer.OrdinalIgnoreCase))
+            {
+                upgradeOptions.DeprecatedPackagesList.Add(Constants.NativeChatConnectorNuGetPackageId);
+            }
+
+            foreach (string packageId in upgradeOptions.DeprecatedPackagesList)
+            {
+                // The legacy Centaur package is scheduled only when it blocks the upgrade.
+                if (packageId.Equals(Constants.TelerikCentaurAllNuGetPackageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                bool isNativeChatConnector = packageId.Equals(Constants.NativeChatConnectorNuGetPackageId, StringComparison.OrdinalIgnoreCase);
+                bool canBeRemovedAfterUpgrade = isNativeChatConnector
+                    ? isNativeChatConnectorRemovedAfterUpgrade
+                    : await this.CanBeRemovedAfterUpgrade(packageId, projectFilePaths, packageSources);
+
+                if (canBeRemovedAfterUpgrade)
+                {
+                    upgradeOptions.PackagesToRemoveAfterUpgrade.Add(packageId);
+                }
+                else if (isNativeChatConnector)
+                {
+                    // Its dependency, Telerik.Sitefinity.Connectivity, is required by the other Sitefinity packages and must stay installed.
+                    upgradeOptions.PackagesToRemoveKeepingDependencies.Add(packageId);
+                }
+            }
+        }
+
+        /// <returns>True if the package is installed and none of its installed versions has dependencies.</returns>
+        private async Task<bool> CanBeRemovedAfterUpgrade(string packageId, IEnumerable<string> projectFilePaths, IEnumerable<PackageSource> packageSources)
+        {
+            bool isInstalled = false;
+            foreach (string projectFilePath in projectFilePaths)
+            {
+                if (!this.sitefinityPackageManager.PackageExists(packageId, projectFilePath))
+                {
+                    continue;
+                }
+
+                isInstalled = true;
+
+                IReadOnlyList<PackageDependency> dependencies = null;
+                try
+                {
+                    dependencies = await this.sitefinityPackageManager.GetInstalledPackageDependencies(packageId, projectFilePath, packageSources);
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogDebug(ex, "Unable to get the dependencies of package '{PackageId}' installed in '{ProjectFilePath}'.", packageId, projectFilePath);
+                }
+
+                // Unknown dependencies are treated as existing ones, which keeps the removal before the upgrade.
+                if (dependencies == null || dependencies.Count > 0)
+                {
+                    return false;
+                }
+            }
+
+            return isInstalled;
+        }
+
+        private static bool ContainsPackage(NuGetPackage packageTree, string packageId)
+        {
+            if (packageTree == null)
+            {
+                return false;
+            }
+
+            if (packageId.Equals(packageTree.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return packageTree.Dependencies != null && packageTree.Dependencies.Any(d => ContainsPackage(d, packageId));
         }
 
         /// <returns>False if the user canceled the upgrade.</returns>

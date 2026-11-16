@@ -1,5 +1,10 @@
 param(
-    [string[]] $PackagesToRemove
+    # Deprecated packages uninstalled together with their dependencies, before the Sitefinity packages are upgraded
+    [string[]] $PackagesToRemove,
+    # Deprecated packages uninstalled before the Sitefinity packages are upgraded, whose dependencies are still used by other packages
+    [string[]] $PackagesToRemoveKeepingDependencies,
+    # Deprecated packages without dependencies, uninstalled after the Sitefinity packages are upgraded
+    [string[]] $PackagesToRemoveAfterUpgrade
 )
 
 function IsUpgradeRequired($oldPackageVersion, $packageVersion) {
@@ -13,19 +18,59 @@ function IsUpgradeRequired($oldPackageVersion, $packageVersion) {
 function Remove-Packages {
     param(
         [string] $ProjectName,
-        [string[]] $PackagesToRemove
+        [string[]] $PackagesToRemove,
+        [switch] $KeepDependencies
     )
+
+    # -RemoveDependencies combined with -Force uninstalls the dependencies even when other packages still use them
+    $uninstallOptions = if ($KeepDependencies) { "-Force" } else { "-RemoveDependencies -Force" }
 
     "`nRemoving deprecated packages for '$ProjectName'"
     foreach ($packageName in $PackagesToRemove) {
-        $deprecatedPackageMatches = Invoke-Expression "Get-Package `"$($packageName)`" -ProjectName `"$ProjectName`"" 
+        $deprecatedPackageMatches = Invoke-Expression "Get-Package `"$($packageName)`" -ProjectName `"$ProjectName`""
         $deprecatedPackage = $deprecatedPackageMatches | Where-Object { $_.Id -eq $packageName } | Select-Object -First 1
         if ($null -ne $deprecatedPackage) {
             "`nUninstalling package: '$($deprecatedPackage.Id)' from `"$ProjectName`""
-            Invoke-Expression "Uninstall-Package `"$($deprecatedPackage.Id)`" -ProjectName `"$ProjectName`" -RemoveDependencies -Force" 
-            
+            Invoke-Expression "Uninstall-Package `"$($deprecatedPackage.Id)`" -ProjectName `"$ProjectName`" $uninstallOptions"
+
             # Save the project after each uninstall to flush DTE state
             # This prevents "reference already exists" errors during the subsequent upgrade
+            $proj = Get-Project $ProjectName
+            $proj.Save()
+            "`nProject '$ProjectName' saved after uninstalling '$($deprecatedPackage.Id)'"
+        }
+    }
+}
+
+# The packages have no dependencies and after the upgrade no Sitefinity package depends on them, so they are uninstalled without -Force.
+# A package that is still required by another package stays installed. This does not fail the upgrade, which is already done.
+function Remove-PackagesAfterUpgrade {
+    param(
+        [string] $ProjectName,
+        [string[]] $PackagesToRemove
+    )
+
+    "`nRemoving deprecated packages without dependencies for '$ProjectName'"
+    foreach ($packageName in $PackagesToRemove) {
+        $deprecatedPackageMatches = Invoke-Expression "Get-Package `"$($packageName)`" -ProjectName `"$ProjectName`""
+        $deprecatedPackage = $deprecatedPackageMatches | Where-Object { $_.Id -eq $packageName } | Select-Object -First 1
+        if ($null -eq $deprecatedPackage) {
+            continue
+        }
+
+        "`nUninstalling package: '$($deprecatedPackage.Id)' from `"$ProjectName`""
+        $errorMessage = $null
+        try {
+            Invoke-Expression "Uninstall-Package `"$($deprecatedPackage.Id)`" -ProjectName `"$ProjectName`" -ErrorVariable errorMessage" | Out-Host
+        }
+        catch {
+            $errorMessage = $_
+        }
+
+        if ($errorMessage) {
+            Write-Warning "Package '$($deprecatedPackage.Id)' was not uninstalled from '$ProjectName'. Uninstall it manually if it is not used. The error was: $errorMessage"
+        }
+        else {
             $proj = Get-Project $ProjectName
             $proj.Save()
             "`nProject '$ProjectName' saved after uninstalling '$($deprecatedPackage.Id)'"
@@ -102,12 +147,21 @@ try {
         $packageCounter = 1
         $totalCount = @($packages).Count
 
-        Remove-Packages -ProjectName $projectName -PackagesToRemove $PackagesToRemove
+        # The prerequisites come first in the config. They are upgraded while the deprecated packages are still installed:
+        # uninstalling a package that the installed Sitefinity packages depend on leaves packages.config inconsistent,
+        # and the next package operation reinstalls it, unless that operation upgrades the Sitefinity packages.
+        $areDeprecatedPackagesRemoved = $false
 
         foreach ($package in $packages) {
             $packageName = $package.name
             $packageVersion = $package.version
-			
+
+            if (!$areDeprecatedPackagesRemoved -and $package.prerequisite -ne "true") {
+                Remove-Packages -ProjectName $projectName -PackagesToRemove $PackagesToRemove
+                Remove-Packages -ProjectName $projectName -PackagesToRemove $PackagesToRemoveKeepingDependencies -KeepDependencies
+                $areDeprecatedPackagesRemoved = $true
+            }
+
             "`nPackage '$packageName' version '$packageVersion'"
 
             if ($package.prerequisite -eq "true") {
@@ -140,7 +194,14 @@ try {
             $progressOut | Out-File -FilePath $progressLogFile
             $packageCounter = $packageCounter + 1
         }
-		
+
+        if (!$areDeprecatedPackagesRemoved) {
+            Remove-Packages -ProjectName $projectName -PackagesToRemove $PackagesToRemove
+            Remove-Packages -ProjectName $projectName -PackagesToRemove $PackagesToRemoveKeepingDependencies -KeepDependencies
+        }
+
+        Remove-PackagesAfterUpgrade -ProjectName $projectName -PackagesToRemove $PackagesToRemoveAfterUpgrade
+
         $projectCounter = $projectCounter + 1
     }
 	

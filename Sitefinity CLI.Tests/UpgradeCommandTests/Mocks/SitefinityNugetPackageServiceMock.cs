@@ -11,6 +11,11 @@ namespace Sitefinity_CLI.Tests.UpgradeCommandTests.Mocks
     {
         public string LatestVersion { get; set; }
 
+        /// <summary>
+        /// The dependency tree of the Sitefinity version that the project is upgraded to.
+        /// </summary>
+        public NuGetPackage UpgradePackage { get; set; } = new NuGetPackage();
+
         public string GetLatestSitefinityVersion()
         {
             return this.LatestVersion;
@@ -23,7 +28,7 @@ namespace Sitefinity_CLI.Tests.UpgradeCommandTests.Mocks
 
         public Task<NuGetPackage> PrepareSitefinityUpgradePackage(UpgradeOptions options, IEnumerable<string> sitefinityProjectFilePaths)
         {
-            return Task.FromResult(new NuGetPackage());
+            return Task.FromResult(this.UpgradePackage);
         }
 
         public void SyncProjectReferencesWithPackages(IEnumerable<string> projectFilePaths, string solutionFolder)

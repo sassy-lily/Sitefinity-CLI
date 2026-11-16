@@ -94,7 +94,9 @@ You can use the add command with the following subcommands:
 
   * **For .slnx**: ```sf upgrade "(path-to-your-project)\SitefinityWebApp.slnx" "15.3.8500"```
 
-  Add ```--removeDeprecatedPackages``` to the command to automatically remove deprecated packages during the upgrade process to ensure a clean and up-to-date codebase.
+  Add ```--removeDeprecatedPackages``` to the command to automatically remove deprecated packages during the upgrade process to ensure a clean and up-to-date codebase. Deprecated packages that have dependencies are uninstalled before the Sitefinity packages are upgraded, because they can block the upgrade. Deprecated packages without dependencies are uninstalled after the upgrade; one that is still required by another installed package is left in place and reported.
+
+  Regardless of this option, the ```Progress.Sitefinity.NativeChatConnector``` package is uninstalled before the upgrade when the new Sitefinity version no longer depends on it and the installed version would block the upgrade.
 
   Before the upgrade, the CLI checks the installed packages of projects using *packages.config* for dependency constraints that are incompatible with the new Sitefinity version (for example, an installed package that requires ```System.Diagnostics.DiagnosticSource (>= 6.0.1 && < 9.0.0)``` while the new version requires ```10.0.3```). Such packages are upgraded to their lowest compatible version before the Sitefinity packages. Add ```--skipPrerequisitesCheck``` to the command to skip this check.
 

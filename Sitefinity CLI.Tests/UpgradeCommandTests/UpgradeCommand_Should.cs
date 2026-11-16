@@ -1,14 +1,20 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using NuGet.Packaging.Core;
+using NuGet.Versioning;
 using Sitefinity_CLI;
 using Sitefinity_CLI.Commands;
+using Sitefinity_CLI.Model;
 using Sitefinity_CLI.PackageManagement.Contracts;
 using Sitefinity_CLI.PackageManagement.Implementations;
+using Sitefinity_CLI.Services;
 using Sitefinity_CLI.Services.Contracts;
 using Sitefinity_CLI.Tests.NugetLicenseCommandTests.Mocks;
 using Sitefinity_CLI.Tests.UpgradeCommandTests;
@@ -237,6 +243,196 @@ namespace SitefinityCLI.Tests.UpgradeCommandTests
                 Assert.IsFalse(((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions.DeprecatedPackagesList
                 .Contains(Constants.TelerikCentaurAllNuGetPackageId));
             }
+
+        [TestMethod]
+        public async Task RemoveLegacyCentaurBeforeUpgradeWithItsDependencies_When_ItIsScheduledForRemoval()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8146);
+            ((SitefinityPackageManagerMock)this.sitefinityPackageManager).InstalledPackages.Add(Constants.TelerikCentaurAllNuGetPackageId);
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641");
+
+            await upgradeCommand.Execute();
+
+            UpgradeOptions upgradeOptions = ((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions;
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveWithDependencies.Contains(Constants.TelerikCentaurAllNuGetPackageId));
+            Assert.IsFalse(upgradeOptions.PackagesToRemoveAfterUpgrade.Contains(Constants.TelerikCentaurAllNuGetPackageId));
+        }
+
+        [TestMethod]
+        public async Task RemoveNativeChatConnectorBeforeUpgradeKeepingItsDependencies_When_NewVersionDoesNotDependOnIt()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8146);
+            this.InstallPackage(Constants.NativeChatConnectorNuGetPackageId, new PackageDependency("Telerik.Sitefinity.Connectivity", VersionRange.Parse("[14.4.8146]")));
+            ((SitefinityNugetPackageServiceMock)this.sitefinityNugetPackageService).UpgradePackage = CreateSitefinityPackageTree("15.4.8641");
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641");
+
+            await upgradeCommand.Execute();
+
+            UpgradeOptions upgradeOptions = ((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions;
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveBeforeUpgrade.Contains(Constants.NativeChatConnectorNuGetPackageId));
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveKeepingDependencies.Contains(Constants.NativeChatConnectorNuGetPackageId));
+            Assert.IsFalse(upgradeOptions.PackagesToRemoveWithDependencies.Contains(Constants.NativeChatConnectorNuGetPackageId));
+        }
+
+        [TestMethod]
+        public async Task ExcludePackagesRemovedBeforeUpgradeFromCompatibilityCheck_When_NativeChatConnectorIsRemoved()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8146);
+            this.InstallPackage(Constants.NativeChatConnectorNuGetPackageId, new PackageDependency("Telerik.Sitefinity.Connectivity", VersionRange.Parse("[14.4.8146]")));
+            this.InstallPackage("AntiXSS");
+            ((SitefinityNugetPackageServiceMock)this.sitefinityNugetPackageService).UpgradePackage = CreateSitefinityPackageTree("15.4.8641");
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641", removeDeprecatedPackages: true);
+
+            await upgradeCommand.Execute();
+
+            List<string> packagesRemovedBeforeUpgrade = ((UpgradeConfigGeneratorMock)this.upgradeConfigGenerator).LastPackagesRemovedBeforeUpgrade.ToList();
+            Assert.IsTrue(packagesRemovedBeforeUpgrade.Contains(Constants.NativeChatConnectorNuGetPackageId));
+            Assert.IsFalse(packagesRemovedBeforeUpgrade.Contains("AntiXSS"), "A package removed after the upgrade is still installed during it.");
+        }
+
+        [TestMethod]
+        public async Task DoNotRemoveNativeChatConnector_When_NewVersionDependsOnIt()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8146);
+            this.InstallPackage(Constants.NativeChatConnectorNuGetPackageId, new PackageDependency("Telerik.Sitefinity.Connectivity", VersionRange.Parse("[14.4.8146]")));
+            NuGetPackage upgradePackage = CreateSitefinityPackageTree("15.3.8500");
+            upgradePackage.Dependencies.Add(new NuGetPackage(Constants.NativeChatConnectorNuGetPackageId, "15.3.8500"));
+            ((SitefinityNugetPackageServiceMock)this.sitefinityNugetPackageService).UpgradePackage = upgradePackage;
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.3.8500", removeDeprecatedPackages: true);
+
+            await upgradeCommand.Execute();
+
+            Assert.IsFalse(((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions.DeprecatedPackagesList
+                .Contains(Constants.NativeChatConnectorNuGetPackageId));
+        }
+
+        [TestMethod]
+        public async Task DoNotRemoveNativeChatConnectorWithoutDependencies_When_DeprecatedPackagesRemovalIsNotRequested()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8149);
+            this.InstallPackage(Constants.NativeChatConnectorNuGetPackageId);
+            ((SitefinityNugetPackageServiceMock)this.sitefinityNugetPackageService).UpgradePackage = CreateSitefinityPackageTree("15.4.8641");
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641");
+
+            await upgradeCommand.Execute();
+
+            Assert.IsFalse(((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions.DeprecatedPackagesList
+                .Contains(Constants.NativeChatConnectorNuGetPackageId));
+        }
+
+        [TestMethod]
+        public async Task RemoveNativeChatConnectorWithoutDependenciesAfterUpgrade_When_DeprecatedPackagesRemovalIsRequested()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8149);
+            this.InstallPackage(Constants.NativeChatConnectorNuGetPackageId);
+            ((SitefinityNugetPackageServiceMock)this.sitefinityNugetPackageService).UpgradePackage = CreateSitefinityPackageTree("15.4.8641");
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641", removeDeprecatedPackages: true);
+
+            await upgradeCommand.Execute();
+
+            UpgradeOptions upgradeOptions = ((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions;
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveAfterUpgrade.Contains(Constants.NativeChatConnectorNuGetPackageId));
+            Assert.IsFalse(upgradeOptions.PackagesToRemoveKeepingDependencies.Contains(Constants.NativeChatConnectorNuGetPackageId));
+        }
+
+        [TestMethod]
+        public async Task RemoveDeprecatedPackageAfterUpgrade_When_ItHasNoDependencies()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8146);
+            this.InstallPackage("AntiXSS");
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641", removeDeprecatedPackages: true);
+
+            await upgradeCommand.Execute();
+
+            UpgradeOptions upgradeOptions = ((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions;
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveAfterUpgrade.Contains("AntiXSS"));
+            Assert.IsFalse(upgradeOptions.PackagesToRemoveBeforeUpgrade.Contains("AntiXSS"));
+        }
+
+        [TestMethod]
+        public async Task RemoveDeprecatedPackageBeforeUpgrade_When_ItHasDependencies()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(13, 3, 7600);
+            this.InstallPackage("CsvHelper", new PackageDependency("Microsoft.CSharp", VersionRange.Parse("4.0.1")));
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641", removeDeprecatedPackages: true);
+
+            await upgradeCommand.Execute();
+
+            UpgradeOptions upgradeOptions = ((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions;
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveWithDependencies.Contains("CsvHelper"));
+            Assert.IsFalse(upgradeOptions.PackagesToRemoveAfterUpgrade.Contains("CsvHelper"));
+        }
+
+        [TestMethod]
+        public async Task RemoveDeprecatedPackageBeforeUpgrade_When_ItsDependenciesCannotBeRead()
+        {
+            ((SitefinityProjectServiceMock)this.sitefinityProjectService).SFVersion = new Version(14, 4, 8146);
+            SitefinityPackageManagerMock packageManager = (SitefinityPackageManagerMock)this.sitefinityPackageManager;
+            packageManager.InstalledPackages.Add("linqtotwitterNET40");
+            packageManager.InstalledPackageDependencies["linqtotwitterNET40"] = null;
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand("15.4.8641", removeDeprecatedPackages: true);
+
+            await upgradeCommand.Execute();
+
+            UpgradeOptions upgradeOptions = ((VisualStudioServiceMock)this.visualStudioService).LastUpgradeOptions;
+            Assert.IsTrue(upgradeOptions.PackagesToRemoveWithDependencies.Contains("linqtotwitterNET40"));
+            Assert.IsFalse(upgradeOptions.PackagesToRemoveAfterUpgrade.Contains("linqtotwitterNET40"));
+        }
+
+        [TestMethod]
+        public void PassEachGroupOfDeprecatedPackagesToTheUpgradeScriptInItsOwnParameter()
+        {
+            UpgradeOptions upgradeOptions = new UpgradeOptions("fakeSln.sln", "15.4.8641", true, true, null, null, false, null);
+            upgradeOptions.DeprecatedPackagesList.AddRange(new[] { Constants.TelerikCentaurAllNuGetPackageId, Constants.NativeChatConnectorNuGetPackageId, "AntiXSS", "Progress.Sitefinity.Ecommerce" });
+            upgradeOptions.PackagesToRemoveKeepingDependencies.Add(Constants.NativeChatConnectorNuGetPackageId);
+            upgradeOptions.PackagesToRemoveAfterUpgrade.AddRange(new[] { "AntiXSS", "Progress.Sitefinity.Ecommerce" });
+
+            List<string> scriptParameters = VisualStudioService.GetUpgradeScriptParameters(upgradeOptions);
+
+            CollectionAssert.AreEqual(
+                new[]
+                {
+                    "-PackagesToRemove Telerik.Centaur.All",
+                    "-PackagesToRemoveKeepingDependencies Progress.Sitefinity.NativeChatConnector",
+                    "-PackagesToRemoveAfterUpgrade AntiXSS, Progress.Sitefinity.Ecommerce"
+                },
+                scriptParameters);
+        }
+
+        [TestMethod]
+        public void PassNoParametersToTheUpgradeScript_When_NoPackagesAreRemoved()
+        {
+            UpgradeOptions upgradeOptions = new UpgradeOptions("fakeSln.sln", "15.4.8641", true, true, null, null, false, null);
+
+            List<string> scriptParameters = VisualStudioService.GetUpgradeScriptParameters(upgradeOptions);
+
+            Assert.AreEqual(0, scriptParameters.Count);
+        }
+
+        private void InstallPackage(string packageId, params PackageDependency[] dependencies)
+        {
+            SitefinityPackageManagerMock packageManager = (SitefinityPackageManagerMock)this.sitefinityPackageManager;
+            packageManager.InstalledPackages.Add(packageId);
+            packageManager.InstalledPackageDependencies[packageId] = dependencies;
+        }
+
+        private static NuGetPackage CreateSitefinityPackageTree(string version)
+        {
+            NuGetPackage sitefinityAll = new NuGetPackage(Constants.SitefinityAllNuGetPackageId, version);
+            NuGetPackage sitefinityCoreModules = new NuGetPackage(Constants.SitefinityCoreModulesNuGetPackageId, version);
+            sitefinityCoreModules.Dependencies.Add(new NuGetPackage("Telerik.Sitefinity.Connectivity", version));
+            sitefinityAll.Dependencies.Add(sitefinityCoreModules);
+
+            return sitefinityAll;
+        }
+
+        private UpgradeCommandSut CreateUpgradeCommand(string targetVersion, bool removeDeprecatedPackages)
+        {
+            UpgradeCommandSut upgradeCommand = this.CreateUpgradeCommand(targetVersion);
+            upgradeCommand.RemoveDeprecatedPackages = removeDeprecatedPackages;
+
+            return upgradeCommand;
+        }
 
         private UpgradeCommandSut CreateUpgradeCommand(string targetVersion)
         {

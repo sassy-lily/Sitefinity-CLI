@@ -37,6 +37,12 @@ namespace Sitefinity_CLI.PackageManagement.Contracts
         /// <returns>The dependencies, or null if the package cannot be found.</returns>
         Task<IReadOnlyList<PackageDependency>> GetPackageDependencies(string id, string version, IEnumerable<PackageSource> nugetPackageSources, NuGetFramework targetFramework);
 
+        /// <summary>
+        /// Gets the direct dependencies of the version of a package that is installed in a project using packages.config.
+        /// </summary>
+        /// <returns>The dependencies, or null if the package is not installed in the project or cannot be found in the package sources.</returns>
+        Task<IReadOnlyList<PackageDependency>> GetInstalledPackageDependencies(string packageId, string projectFilePath, IEnumerable<PackageSource> nugetPackageSources);
+
         void SyncReferencesWithPackages(string projectFilePath, string solutionFolder);
 
         void SetTargetFramework(IEnumerable<string> sitefinityProjectFilePaths, string version);
